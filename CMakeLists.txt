@@ -13,14 +13,14 @@ find_package(OpenSSL REQUIRED)
 add_compile_options(-Wall -Wextra -fsanitize=address,undefined)
 add_link_options(-fsanitize=address,undefined)
 
-add_library(rbcore STATIC core.c)
+add_library(rbcore STATIC src/core.c)
 target_link_libraries(rbcore PRIVATE OpenSSL::Crypto)
 target_include_directories(rbcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(redblack main.c)
+add_executable(redblack src/main.c)
 target_link_libraries(redblack PRIVATE rbcore)
 
-add_executable(test_core test.c)
+add_executable(test_core src/test.c)
 target_link_libraries(test_core PRIVATE rbcore)
 
 enable_testing()
