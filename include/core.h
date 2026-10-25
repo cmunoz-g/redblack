@@ -1,5 +1,6 @@
 #pragma once
 
+#include "stdbool.h"
 #include "stdint.h"
 
 #define MAX_PORT 65535
@@ -22,3 +23,5 @@ typedef enum
     BLACK_CHILD,
     CORE_CHILD,
 } forked_processes;
+
+bool core_loop(int red_fd, int black_fd, const char* keyfile);

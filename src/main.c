@@ -4,15 +4,18 @@
 #include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <stdbool.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define ERR_STR_SIZE ((size_t)64)
 
-bool parse_port(unsigned int* port, char* source, char* err_str)
+bool parse_port(uint16_t* port, char* source, char* err_str)
 {
     char* end;
     errno = 0;
@@ -76,18 +79,19 @@ bool prepare_relay_loop(int* udp_fd, struct sockaddr_in* local,
     int on = 1;
     setsockopt(*udp_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
 
-    *local = (struct sockaddr_in){.sin_addr = AF_INET,
+    *local = (struct sockaddr_in){.sin_family = AF_INET,
                                   .sin_port = htons(listen_port),
                                   .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
 
-    *dest = (struct sockaddr_in){.sin_addr = AF_INET,
+    *dest = (struct sockaddr_in){.sin_family = AF_INET,
                                  .sin_port = htons(send_port),
                                  .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
 
     if (bind(*udp_fd, (struct sockaddr*)local, sizeof *local) < 0)
     {
-        fprintf(stderr, "Error: Cannot bind to UDP socket with port %d\n",
-                listen_port);
+        int err = errno;
+        fprintf(stderr, "Error: cannot bind UDP socket to port %d: %s\n",
+                listen_port, strerror(err));
         return false;
     }
 
@@ -151,7 +155,6 @@ bool relay_loop(int ipc_fd, uint16_t listen_port, uint16_t send_port)
             }
         }
     }
-
     return true;
 }
 
@@ -201,6 +204,10 @@ int main(int argc, char* argv[])
             perror("Error: fork()");
             for (int j = 0; j < i; ++j)
             {
+                kill(pids[j], SIGTERM);
+            }
+            for (int j = 0; j < i; ++j)
+            {
                 waitpid(pids[j], NULL, 0);
             }
             exit(EXIT_FAILURE);
@@ -232,7 +239,7 @@ int main(int argc, char* argv[])
                 {
                     close(red_to_core[0]);
                     close(black_to_core[0]);
-                    core_loop();  // todo
+                    ok = core_loop(red_to_core[1], black_to_core[1], keyfile);
                     break;
                 }
             }
@@ -246,7 +253,28 @@ int main(int argc, char* argv[])
     close(black_to_core[0]);
     close(black_to_core[1]);
 
-    // todo : wait on children
+    pid_t dead;
 
-    return 0;
+    do
+    {
+        dead = waitpid(-1, NULL, 0);
+    } while (dead < 0 && errno == EINTR);
+
+    for (int i = 0; i < N_CHILDREN; ++i)
+    {
+        if (pids[i] != dead)
+        {
+            kill(pids[i], SIGTERM);
+        }
+    }
+
+    for (int i = 0; i < N_CHILDREN; ++i)
+    {
+        if (pids[i] != dead)
+        {
+            waitpid(pids[i], NULL, 0);
+        }
+    }
+
+    return EXIT_FAILURE;
 }
