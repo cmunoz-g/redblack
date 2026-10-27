@@ -8,6 +8,9 @@
 #define MAX_MESSAGE_SIZE 100
 #define MAX_PACKET_SIZE MAX_MESSAGE_SIZE  // todo: change later
 #define N_CHILDREN 3
+#define KEY_SIZE 32
+#define HEADER_LEN 12
+#define TAG_LEN 16
 
 typedef struct
 {
@@ -23,5 +26,13 @@ typedef enum
     BLACK_CHILD,
     CORE_CHILD,
 } forked_processes;
+
+typedef struct
+{
+    uint8_t key[32];
+    uint32_t node_id;
+    uint64_t next_seq_num;
+    bool alive;
+} core_state;
 
 bool core_loop(int red_fd, int black_fd, const char* keyfile);
