@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 
 static int hexval(int c)
@@ -22,6 +23,14 @@ static int hexval(int c)
     }
     return -1;
 }
+
+static void write_u32(uint8_t* buf, uint32_t val) {}
+
+static void write_u64(uint8_t* buf, uint64_t val) {}
+
+static uint32_t read_u32(uint8_t* buf) {}
+
+static uint64_t read_u64(uint8_t* buf) {}
 
 bool load_key(const char* keyfile, uint8_t* key)
 {
@@ -61,10 +70,6 @@ bool load_key(const char* keyfile, uint8_t* key)
 
     return true;
 }
-
-static void write_u32(uint8_t* buf, uint32_t val) {}
-
-static void write_u64(uint8_t* buf, uint64_t val) {}
 
 bool seal_packet(const uint8_t* key, uint32_t node_id, uint64_t seq_num,
                  const uint8_t* msg, size_t msg_size, uint8_t* packet,
@@ -134,19 +139,127 @@ out:
     return ok;
 }
 
+bool open_packet(const uint8_t* key, const uint8_t* packet, size_t packet_size,
+                 uint8_t* out_buffer, size_t* out_len)
+{
+    *out_len = 0;
+    if (packet_size < 29 || packet_size > 128)
+    {
+        return false;
+    }
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+    {
+        return false;
+    }
+
+    bool ok = false;
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key, packet) != 1)
+    {
+        goto out;
+    }
+
+    int len = 0;
+    if (EVP_DecryptUpdate(ctx, NULL, &len, packet, HEADER_LEN) != 1)
+    {
+        goto out;
+    }
+
+    const size_t n = packet_size - HEADER_LEN - TAG_LEN;
+    if (EVP_DecryptUpdate(ctx, out_buffer, &len, packet + HEADER_LEN, (int)n) !=
+        1)
+    {
+        goto out;
+    }
+
+    if ((size_t)len != n)
+    {
+        goto out;
+    }
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, TAG_LEN,
+                            (void*)(packet + HEADER_LEN + len)) != 1)
+    {
+        goto out;
+    }
+
+    int final_len = 0;
+    if (EVP_DecryptFinal_ex(ctx, out_buffer + len, &final_len) != 1)
+    {
+        goto out;
+    }
+
+    *out_len = (size_t)n;
+    ok = true;
+
+out:
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok)
+    {
+        OPENSSL_cleanse(out_buffer, MAX_MESSAGE_SIZE);
+    }
+    return ok;
+}
+
+bool core_encrypt(core_state* core_state, const char* msg, size_t msg_size,
+                  uint8_t* packet, size_t* packet_size)
+{
+    *packet_size = 0;
+    if (!core_state->alive)
+    {
+        return false;
+    }
+    if (core_state->next_seq_num == UINT64_MAX)
+    {
+        core_state->alive = false;
+        return false;
+    }
+    uint64_t seq_num = core_state->next_seq_num++;
+    if (!seal_packet(core_state->key, core_state->node_id, seq_num, msg,
+                     msg_size, packet, packet_size))
+    {
+        // drops msg if encrypting fails
+        return false;
+    }
+    return true;
+}
+
+bool core_decrypt(core_state* core_state, const uint8_t* packet,
+                  const size_t packet_size, uint8_t* out_buffer,
+                  size_t* out_len)
+{
+    *out_len = 0;
+    if (!core_state->alive)
+    {
+        return false;
+    }
+    if (!open_packet(core_state->key, packet, packet_size, out_buffer, out_len))
+    {
+        return false;
+    }
+    if (read_u32(packet) == core_state->node_id)
+    {
+        OPENSSL_cleanse(out_buffer, out_len);
+        *out_len = 0;
+        return false;
+    }
+    return true;
+}
+
 static bool process_packet(short revents, int in_fd, int out_fd,
-                           const char* side)
+                           const char* side, core_state* core_state)
 {
     if (!(revents & (POLLIN | POLLHUP | POLLERR)))
     {
         return true;
     }
 
-    char buf[MAX_PACKET_SIZE];
+    uint8_t buf[MAX_PACKET_SIZE];
     ssize_t r = recv(in_fd, buf, MAX_PACKET_SIZE, 0);
     if (r == 0)
     {
-        fprintf(stderr, "Error: %s side gone", side);
+        fprintf(stderr, "Error: %s side gone\n", side);
         return false;
     }
     if (r < 0)
@@ -154,18 +267,39 @@ static bool process_packet(short revents, int in_fd, int out_fd,
         perror("Error: core recv()");
         return false;
     }
-    if (send(out_fd, buf, (size_t)r, 0) < 0)
+
+    uint8_t out_buffer[MAX_PACKET_SIZE];
+    size_t out_len;
+    bool ok = false;
+
+    if (!strcmp(side, "red"))
+    {
+        ok = core_encrypt(core_state, buf, r, out_buffer, &out_len);
+    }
+    else
+    {
+        ok = core_decrypt(core_state, buf, r, out_buffer, &out_len);
+    }
+
+    if (ok && send(out_fd, out_buffer, out_len, MSG_NOSIGNAL) < 0)
     {
         perror("Error: core send()");
         return false;
     }
 
+    OPENSSL_cleanse(buf, sizeof buf);
+    OPENSSL_cleanse(out_buffer, sizeof out_buffer);
+
     return true;
 }
 
-bool core_loop(int red_fd, int black_fd, const char* keyfile)
+bool core_loop(int red_fd, int black_fd, core_state* core_state,
+               const char* keyfile)
 {
-    (void)keyfile;
+    if (!load_key(keyfile, core_state->key))
+    {
+        return false;
+    }
 
     struct pollfd fds[2] = {{.fd = red_fd, .events = POLLIN},
                             {.fd = black_fd, .events = POLLIN}};
@@ -182,11 +316,13 @@ bool core_loop(int red_fd, int black_fd, const char* keyfile)
             return false;
         }
 
-        if (!process_packet(fds[0].revents, red_fd, black_fd, "red"))
+        if (!process_packet(fds[0].revents, red_fd, black_fd, "red",
+                            core_state))
         {
             return false;
         }
-        if (!process_packet(fds[1].revents, black_fd, red_fd, "black"))
+        if (!process_packet(fds[1].revents, black_fd, red_fd, "black",
+                            core_state))
         {
             return false;
         }
