@@ -35,4 +35,5 @@ typedef struct
     bool alive;
 } core_state;
 
-bool core_loop(int red_fd, int black_fd, const char* keyfile);
+bool core_loop(int red_fd, int black_fd, core_state* core_state,
+               const char* keyfile);

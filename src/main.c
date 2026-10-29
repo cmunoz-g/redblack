@@ -15,7 +15,7 @@
 
 #define ERR_STR_SIZE ((size_t)64)
 
-bool parse_port(uint16_t* port, char* source, char* err_str)
+bool parse_num(int* dest, char* source, char* err_str)
 {
     char* end;
     errno = 0;
@@ -25,7 +25,7 @@ bool parse_port(uint16_t* port, char* source, char* err_str)
         snprintf(err_str, ERR_STR_SIZE, "Not a number");
         return false;
     }
-    if (errno == ERANGE || val < MIN_PORT || val > MAX_PORT)
+    if (errno == ERANGE)
     {
         snprintf(err_str, ERR_STR_SIZE, "Out of range");
         return false;
@@ -35,7 +35,23 @@ bool parse_port(uint16_t* port, char* source, char* err_str)
         snprintf(err_str, ERR_STR_SIZE, "Trailing characters after number");
         return false;
     }
-    *port = (int)val;
+    *dest = (int)val;
+    return true;
+}
+
+bool parse_port(uint16_t* port, char* source, char* err_str)
+{
+    int dest = 0;
+    if (!parse_num(&dest, source, err_str))
+    {
+        return false;
+    }
+    if (dest < MIN_PORT || dest > MAX_PORT)
+    {
+        snprintf(err_str, ERR_STR_SIZE, "Out of range");
+        return false;
+    }
+    *port = (uint16_t)dest;
     return true;
 }
 
@@ -169,6 +185,18 @@ int main(int argc, char* argv[])
         exit(EXIT_FAILURE);
     }
 
+    int node_id;
+    char err_str[ERR_STR_SIZE];
+    if (!parse_num(&node_id, argv[1], err_str))
+    {
+        fprintf(stderr,
+                "Error: %s"
+                "Usage: ./redblack <node_id> <red_in_port> <red_out_port>"
+                "<black_in_port> <black_out_port> <keyfile>\n",
+                err_str);
+        exit(EXIT_FAILURE);
+    }
+
     port_info port_info;
     if (!parse_all_ports(argv, &port_info))
     {
@@ -177,6 +205,7 @@ int main(int argc, char* argv[])
                 "<black_in_port> <black_out_port> <keyfile>\n");
         exit(EXIT_FAILURE);
     }
+
     const char* keyfile = argv[6];
 
     int red_to_core[2];
@@ -237,9 +266,12 @@ int main(int argc, char* argv[])
                 }
                 case CORE_CHILD:
                 {
+                    core_state core_state = {
+                        .alive = true, .next_seq_num = 0, .node_id = node_id};
                     close(red_to_core[0]);
                     close(black_to_core[0]);
-                    ok = core_loop(red_to_core[1], black_to_core[1], keyfile);
+                    ok = core_loop(red_to_core[1], black_to_core[1],
+                                   &core_state, keyfile);
                     break;
                 }
             }

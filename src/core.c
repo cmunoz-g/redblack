@@ -12,7 +12,7 @@
 
 static int hexval(int c)
 {
-    if (c >= 0 && c <= 9)
+    if (c >= '0' && c <= '9')
     {
         return c - '0';
     }
@@ -24,13 +24,49 @@ static int hexval(int c)
     return -1;
 }
 
-static void write_u32(uint8_t* buf, uint32_t val) {}
+static void write_u32(uint8_t* buf, uint32_t val)
+{
+    int shamt = 24;
+    for (int i = 0; i < 4; ++i)
+    {
+        buf[i] = (uint8_t)(val >> shamt);
+        shamt -= 8;
+    }
+}
 
-static void write_u64(uint8_t* buf, uint64_t val) {}
+static void write_u64(uint8_t* buf, uint64_t val)
+{
+    int shamt = 56;
+    for (int i = 0; i < 8; ++i)
+    {
+        buf[i] = (uint8_t)(val >> shamt);
+        shamt -= 8;
+    }
+}
 
-static uint32_t read_u32(uint8_t* buf) {}
+static uint32_t read_u32(const uint8_t* buf)
+{
+    int shamt = 24;
+    uint32_t val = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        val |= (uint32_t)buf[i] << shamt;
+        shamt -= 8;
+    }
+    return val;
+}
 
-static uint64_t read_u64(uint8_t* buf) {}
+// static uint64_t read_u64(const uint8_t* buf)
+// {
+//     int shamt = 56;
+//     uint64_t val = 0;
+//     for (int i = 0; i < 8; ++i)
+//     {
+//         val |= (uint64_t)buf[i] << shamt;
+//         shamt -= 8;
+//     }
+//     return val;
+// }
 
 bool load_key(const char* keyfile, uint8_t* key)
 {
@@ -202,7 +238,7 @@ out:
     return ok;
 }
 
-bool core_encrypt(core_state* core_state, const char* msg, size_t msg_size,
+bool core_encrypt(core_state* core_state, const uint8_t* msg, size_t msg_size,
                   uint8_t* packet, size_t* packet_size)
 {
     *packet_size = 0;
@@ -240,7 +276,7 @@ bool core_decrypt(core_state* core_state, const uint8_t* packet,
     }
     if (read_u32(packet) == core_state->node_id)
     {
-        OPENSSL_cleanse(out_buffer, out_len);
+        OPENSSL_cleanse(out_buffer, *out_len);
         *out_len = 0;
         return false;
     }
